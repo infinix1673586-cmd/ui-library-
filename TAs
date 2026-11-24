@@ -1,18 +1,25 @@
 --[[
-    ✦ SAKURA UI LIBRARY v1.0 ✦  (ชมพู × ม่วง | เหลี่ยมมินิมอล)
-    - ขอบ UI หลักไล่สีชมพู→ม่วง วิ่งรอบตลอด
-    - ปุ่มลอยสี่เหลี่ยมมีสีไล่ (ลากได้ / กดเปิด-ปิด)
-    - Tabs, Section, Label, Paragraph, Button, Toggle, Slider,
-      Dropdown (เลือกเดียว/หลายตัว), Textbox, Keybind, ColorPicker, Notify
-    - ตัวหนังสือสว่างชัด รองรับไทย + อังกฤษ
-    ลบส่วน "DEMO" ด้านล่างทิ้งได้เลย ถ้าจะเอาแค่ library
+    ✦ SAKURA UI LIBRARY v1.2 ✦  (ชมพู × ม่วง | เหลี่ยมมินิมอล)   — ตัว library ล้วน เอาไปต่อยอดได้
+
+    Window  : Library:CreateWindow({Title, Subtitle, Icon, ToggleImage, MainImage, MainImageTransparency,
+                                    ToggleKey, Width, Height,
+                                    FloatButton=true, FloatSize=48, Scale=1, SaveSettings=true})
+              Win:CreateTab(name, icon)        Win:CreateSettingsTab(name, icon)
+              Win:SetToggleImage(id|nil)       Win:SetToggleSize(px)     Win:SetScale(n)
+              Win:SetMainImage(id|nil)         Win:SetMainImageTransparency(0..0.95)
+              Win:ShowFloat(bool)  Win:SetVisible(bool)  Win:Toggle()  Win:Notify({...})  Win:Destroy()
+    Tab     : CreateSection(name)  CreateLabel  CreateParagraph  CreateButton  CreateToggle
+              CreateSlider  CreateDropdown  CreateTextbox  CreateKeybind  CreateColorPicker
+    ทุก element รับ Icon = "ชื่อ Lucide" | เลข asset id | "rbxassetid://..." | อีโมจิ | ชื่อที่ RegisterIcons ไว้
+    Library:RegisterIcons({home = "rbxassetid://123"})     Library.Flags[flag]
 ]]
 
-local Library = {Flags = {}, Version = "1.0.0"}
+local Library = {Flags = {}, Icons = {}, UseLucide = true, Version = "1.2.0"}
 
 local Players      = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local UIS          = game:GetService("UserInputService")
+local HttpService  = game:GetService("HttpService")
 
 ---------------------------------------------------------------------
 -- THEME
@@ -102,11 +109,28 @@ local function Order(page, f)
     f.LayoutOrder = n
 end
 
+local AllRows = setmetatable({}, {__mode = "k"})
+Library.RowAlpha = 0
+local function SetRowAlpha(a)
+    Library.RowAlpha = a
+    for f in pairs(AllRows) do
+        if f.Parent then Tween(f, .25, {BackgroundTransparency = a}) end
+    end
+end
+
+local function NormId(id)
+    if id == nil then return nil end
+    id = tostring(id):gsub("^%s+", ""):gsub("%s+$", "")
+    if id == "" then return nil end
+    return id
+end
+
 local function Row(page, h)
     local f = New("Frame", {
-        Size = UDim2.new(1, 0, 0, h), BackgroundColor3 = Theme.Row,
+        Size = UDim2.new(1, 0, 0, h), BackgroundColor3 = Theme.Row, BackgroundTransparency = Library.RowAlpha,
         BorderSizePixel = 0, ClipsDescendants = true, Parent = page,
     })
+    AllRows[f] = true
     Order(page, f)
     Corner(f, 6)
     return f, Stroke(f, Theme.Line, 1)
@@ -147,7 +171,107 @@ local function isMove(i)
     return i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch
 end
 
--- แถบสไลด์ (ใช้ซ้ำทั้ง Slider และ ColorPicker)
+---------------------------------------------------------------------
+-- ICONS  (Lucide / asset id / rbxassetid / emoji / ชื่อที่ลงทะเบียนเอง)
+---------------------------------------------------------------------
+function Library:RegisterIcons(t)
+    for k, v in pairs(t or {}) do Library.Icons[k] = v end
+end
+
+local LucideModule, LucideTried
+local function GetLucide()
+    if LucideTried then return LucideModule end
+    LucideTried = true
+    pcall(function()
+        LucideModule = loadstring(game:HttpGet("https://raw.githubusercontent.com/deividcomsono/lucide-roblox-direct/refs/heads/main/source.lua"))()
+    end)
+    return LucideModule
+end
+
+-- คืน {Image=, RectOffset=, RectSize=} หรือ {Text=} หรือ nil
+local function ResolveIcon(icon)
+    if icon == nil or icon == "" then return nil end
+    if type(icon) == "number" then return {Image = "rbxassetid://" .. icon} end
+    if type(icon) == "table" then
+        local url = icon.Url or icon.Image
+        if url then return {Image = url, RectOffset = icon.ImageRectOffset, RectSize = icon.ImageRectSize} end
+        return nil
+    end
+    local s = tostring(icon)
+    local reg = Library.Icons[s]
+    if reg ~= nil and reg ~= s then return ResolveIcon(reg) end
+    if s:match("^%d+$") then return {Image = "rbxassetid://" .. s} end
+    if s:match("^rbxasset") or s:match("^https?://") then return {Image = s} end
+    if s:match("^[%a][%w%-_]*$") then -- เหมือนชื่อไอคอน → ลอง Lucide
+        if not Library.UseLucide then return nil end
+        local L = GetLucide()
+        if L then
+            local ok, res = pcall(function()
+                if type(L.GetAsset) == "function" then return L.GetAsset(s) end
+                return L[s]
+            end)
+            if ok and type(res) == "table" then return ResolveIcon(res) end
+            if ok and type(res) == "string" then return {Image = res} end
+        end
+        return nil
+    end
+    return {Text = s} -- อีโมจิ/สัญลักษณ์
+end
+
+local function MakeIcon(parent, icon, px, color, props)
+    local r = ResolveIcon(icon)
+    if not r then return nil end
+    local o
+    if r.Image then
+        o = New("ImageLabel", {
+            BackgroundTransparency = 1, Image = r.Image, ImageColor3 = color or WHITE, ScaleType = Enum.ScaleType.Fit,
+            Size = UDim2.fromOffset(px, px), BorderSizePixel = 0, Parent = parent,
+        })
+        if r.RectOffset then o.ImageRectOffset = r.RectOffset; o.ImageRectSize = r.RectSize end
+    else
+        o = New("TextLabel", {
+            BackgroundTransparency = 1, Text = r.Text, Font = Enum.Font.GothamBold, TextSize = px - 2,
+            TextColor3 = color or Theme.Text, Size = UDim2.fromOffset(px, px), BorderSizePixel = 0, Parent = parent,
+        })
+    end
+    for k, v in pairs(props or {}) do o[k] = v end
+    return o
+end
+
+local function ColorProp(o) return o:IsA("ImageLabel") and "ImageColor3" or "TextColor3" end
+
+-- ป้ายชื่อ element + ไอคอน (Icon = ...) ด้านซ้าย
+local function NameLabel(row, o, fallback, size, y)
+    y = y or 0
+    local x = 12
+    if o.Icon then
+        local cy = (size.Y.Scale > 0) and UDim2.new(0, 12, .5, 0) or UDim2.new(0, 12, 0, y + size.Y.Offset / 2)
+        local ic = MakeIcon(row, o.Icon, 16, Theme.Pink, {AnchorPoint = Vector2.new(0, .5), Position = cy})
+        if ic then x = 34 end
+    end
+    return Txt(row, {
+        Text = o.Name or fallback, Position = UDim2.fromOffset(x, y),
+        Size = UDim2.new(size.X.Scale, size.X.Offset - (x - 12), size.Y.Scale, size.Y.Offset),
+    })
+end
+
+---------------------------------------------------------------------
+-- SAVE (เก็บค่าปรับแต่ง ถ้า executor มี writefile)
+---------------------------------------------------------------------
+local SAVE_FILE = "SakuraUI_Settings.json"
+local function LoadSaved()
+    local ok, d = pcall(function()
+        if isfile and readfile and isfile(SAVE_FILE) then return HttpService:JSONDecode(readfile(SAVE_FILE)) end
+    end)
+    return (ok and type(d) == "table") and d or {}
+end
+local function WriteSaved(t)
+    if writefile then pcall(function() writefile(SAVE_FILE, HttpService:JSONEncode(t)) end) end
+end
+
+---------------------------------------------------------------------
+-- SLIDER BAR (ใช้ซ้ำทั้ง Slider และ ColorPicker)
+---------------------------------------------------------------------
 local function MakeBar(connect, page, parent, pos, size, fill, seq, cb)
     local track = New("Frame", {
         Position = pos, Size = size, BorderSizePixel = 0,
@@ -244,9 +368,12 @@ local function BuildElements(page, obj, connect)
         Gradient(ln)
     end
 
-    function obj:CreateLabel(text)
+    function obj:CreateLabel(o)
+        if type(o) ~= "table" then o = {Name = o} end
         local row = Row(page, 32)
-        local l = Txt(row, {Text = text or "Label", Position = UDim2.fromOffset(12, 0), Size = UDim2.new(1, -24, 1, 0), TextColor3 = Theme.Sub, TextSize = 13})
+        local l = NameLabel(row, o, "Label", UDim2.new(1, -24, 1, 0))
+        l.TextColor3 = Theme.Sub
+        l.TextSize = 13
         return {Set = function(_, t) l.Text = t end}
     end
 
@@ -256,6 +383,8 @@ local function BuildElements(page, obj, connect)
             Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y,
             BackgroundColor3 = Theme.Row, BorderSizePixel = 0, Parent = page,
         })
+        f.BackgroundTransparency = Library.RowAlpha
+        AllRows[f] = true
         Order(page, f)
         Corner(f, 6)
         Stroke(f, Theme.Line, 1)
@@ -273,7 +402,7 @@ local function BuildElements(page, obj, connect)
         if type(o) == "string" then o = {Name = o} end
         o = o or {}
         local row, st = Row(page, 38)
-        local l = Txt(row, {Text = o.Name or "Button", Position = UDim2.fromOffset(12, 0), Size = UDim2.new(1, -56, 1, 0)})
+        local l = NameLabel(row, o, "Button", UDim2.new(1, -56, 1, 0))
         local ic = New("Frame", {AnchorPoint = Vector2.new(1, .5), Position = UDim2.new(1, -8, .5, 0), Size = UDim2.fromOffset(26, 22), BackgroundColor3 = WHITE, BorderSizePixel = 0, Parent = row})
         Corner(ic, 5)
         Gradient(ic, 45)
@@ -291,7 +420,7 @@ local function BuildElements(page, obj, connect)
     function obj:CreateToggle(o)
         o = o or {}
         local row, st = Row(page, 38)
-        Txt(row, {Text = o.Name or "Toggle", Position = UDim2.fromOffset(12, 0), Size = UDim2.new(1, -70, 1, 0)})
+        NameLabel(row, o, "Toggle", UDim2.new(1, -70, 1, 0))
         local track = New("Frame", {AnchorPoint = Vector2.new(1, .5), Position = UDim2.new(1, -12, .5, 0), Size = UDim2.fromOffset(40, 20), BackgroundColor3 = Theme.Off, BorderSizePixel = 0, Parent = row})
         Corner(track, 5)
         local g = Gradient(track, 0)
@@ -327,7 +456,7 @@ local function BuildElements(page, obj, connect)
         local suffix = o.Suffix or ""
         local row, st = Row(page, 54)
         Hover(row, row, st)
-        Txt(row, {Text = o.Name or "Slider", Position = UDim2.fromOffset(12, 6), Size = UDim2.new(1, -100, 0, 20)})
+        NameLabel(row, o, "Slider", UDim2.new(1, -100, 0, 20), 6)
         local vl = Txt(row, {
             Text = "", TextXAlignment = Enum.TextXAlignment.Right, TextColor3 = Theme.Pink, Font = Enum.Font.GothamBold, TextSize = 13,
             AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -12, 0, 6), Size = UDim2.fromOffset(86, 20),
@@ -358,7 +487,7 @@ local function BuildElements(page, obj, connect)
         local multi = o.Multi
         local options = o.Options or {}
         local row, st = Row(page, 38)
-        Txt(row, {Text = o.Name or "Dropdown", Position = UDim2.fromOffset(12, 0), Size = UDim2.new(.4, -12, 0, 38)})
+        NameLabel(row, o, "Dropdown", UDim2.new(.4, -12, 0, 38))
         local cur = Txt(row, {
             Text = "—", TextColor3 = Theme.Sub, TextXAlignment = Enum.TextXAlignment.Right, TextSize = 13,
             TextTruncate = Enum.TextTruncate.AtEnd, Position = UDim2.new(.4, 0, 0, 0), Size = UDim2.new(.6, -34, 0, 38),
@@ -468,7 +597,7 @@ local function BuildElements(page, obj, connect)
         o = o or {}
         local row, st = Row(page, 38)
         Hover(row, row, st)
-        Txt(row, {Text = o.Name or "Textbox", Position = UDim2.fromOffset(12, 0), Size = UDim2.new(.5, -12, 1, 0)})
+        NameLabel(row, o, "Textbox", UDim2.new(.5, -12, 1, 0))
         local box = New("Frame", {AnchorPoint = Vector2.new(1, .5), Position = UDim2.new(1, -8, .5, 0), Size = UDim2.new(.5, -8, 0, 26), BackgroundColor3 = Theme.Input, BorderSizePixel = 0, Parent = row})
         Corner(box, 5)
         local bs = Stroke(box, Theme.Line, 1)
@@ -493,7 +622,7 @@ local function BuildElements(page, obj, connect)
         o = o or {}
         local key = o.Default or Enum.KeyCode.Unknown
         local row, st = Row(page, 38)
-        Txt(row, {Text = o.Name or "Keybind", Position = UDim2.fromOffset(12, 0), Size = UDim2.new(1, -110, 1, 0)})
+        NameLabel(row, o, "Keybind", UDim2.new(1, -110, 1, 0))
         local btn = New("TextButton", {
             AnchorPoint = Vector2.new(1, .5), Position = UDim2.new(1, -8, .5, 0), Size = UDim2.fromOffset(86, 24),
             BackgroundColor3 = Theme.Input, AutoButtonColor = false, BorderSizePixel = 0,
@@ -528,7 +657,7 @@ local function BuildElements(page, obj, connect)
         local color = o.Default or Theme.Pink
         local h, s, v = color:ToHSV()
         local row, st = Row(page, 38)
-        Txt(row, {Text = o.Name or "Color", Position = UDim2.fromOffset(12, 0), Size = UDim2.new(1, -70, 0, 38)})
+        NameLabel(row, o, "Color", UDim2.new(1, -70, 0, 38))
         local swatch = New("Frame", {AnchorPoint = Vector2.new(1, .5), Position = UDim2.new(1, -12, 0, 19), Size = UDim2.fromOffset(34, 18), BackgroundColor3 = color, BorderSizePixel = 0, Parent = row})
         Corner(swatch, 4)
         Stroke(swatch, WHITE, 1, .6)
@@ -583,12 +712,43 @@ end
 ---------------------------------------------------------------------
 function Library:CreateWindow(cfg)
     cfg = cfg or {}
-    local Win = {Tabs = {}, ToggleKey = cfg.ToggleKey or Enum.KeyCode.RightShift}
+    local Win = {Tabs = {}}
     local conns = {}
     local function connect(sig, fn)
         local c = sig:Connect(fn)
         table.insert(conns, c)
         return c
+    end
+
+    -- ค่าที่เซฟไว้ (ถ้ามี) ทับค่า default
+    local Saved = (cfg.SaveSettings ~= false) and LoadSaved() or {}
+    if Saved.ToggleImage ~= nil then
+        Win.ToggleImage = (Saved.ToggleImage ~= "") and Saved.ToggleImage or nil
+    else
+        Win.ToggleImage = cfg.ToggleImage
+    end
+    if Saved.MainImage ~= nil then
+        Win.MainImage = (Saved.MainImage ~= "") and Saved.MainImage or nil
+    else
+        Win.MainImage = cfg.MainImage or cfg.Mainlmage -- รับทั้ง MainImage และ Mainlmage (พิมพ์ l เล็ก)
+    end
+    Win.MainImageTransparency = math.clamp(Saved.MainImageTrans or cfg.MainImageTransparency or .5, 0, .95)
+    Win.FloatSize = math.clamp(Saved.FloatSize or cfg.FloatSize or 48, 32, 96)
+    local uiScale = math.clamp(Saved.UIScale or cfg.Scale or 1, .6, 1.3)
+    Win.ToggleKey = cfg.ToggleKey or Enum.KeyCode.RightShift
+    if Saved.ToggleKey then
+        local ok, k = pcall(function() return Enum.KeyCode[Saved.ToggleKey] end)
+        if ok and k then Win.ToggleKey = k end
+    end
+    local function persist()
+        if cfg.SaveSettings == false then return end
+        Saved.ToggleImage = Win.ToggleImage ~= nil and tostring(Win.ToggleImage) or ""
+        Saved.FloatSize = Win.FloatSize
+        Saved.UIScale = uiScale
+        Saved.ToggleKey = Win.ToggleKey.Name
+        Saved.MainImage = Win.MainImage ~= nil and tostring(Win.MainImage) or ""
+        Saved.MainImageTrans = Win.MainImageTransparency
+        WriteSaved(Saved)
     end
 
     local parentGui = GetParent()
@@ -597,12 +757,10 @@ function Library:CreateWindow(cfg)
     end
     local Gui = New("ScreenGui", {Name = "SakuraUI", ResetOnSpawn = false, ZIndexBehavior = Enum.ZIndexBehavior.Sibling, IgnoreGuiInset = true, DisplayOrder = 999, Parent = parentGui})
 
-    -- notify holder
     local nh = New("Frame", {Name = "Notify", AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -12, 0, 12), Size = UDim2.new(0, 270, 1, -24), BackgroundTransparency = 1, Parent = Gui})
     New("UIListLayout", {Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder, Parent = nh})
     Library.NotifyHolder = nh
 
-    -- drag helper
     local function Drag(handle, target, onClick)
         local dragging, moved, startIn, startUI = false, false, nil, nil
         handle.InputBegan:Connect(function(i)
@@ -645,6 +803,13 @@ function Library:CreateWindow(cfg)
     Spin(New("UIGradient", {Color = GradSeq(), Parent = ms}), 3) -- ขอบไล่สีวิ่งรอบ
     local Scale = New("UIScale", {Scale = 0, Parent = Main})
 
+    -- รูปพื้นหลัง UI หลัก (MainImage)
+    local BG = New("ImageLabel", {
+        Name = "BG", BackgroundTransparency = 1, ScaleType = Enum.ScaleType.Crop, Size = UDim2.fromScale(1, 1),
+        BorderSizePixel = 0, Visible = false, Image = "", Parent = Main,
+    })
+    Corner(BG, 8)
+
     -- top bar
     local Top = New("Frame", {Size = UDim2.new(1, 0, 0, 40), BackgroundTransparency = 1, Parent = Main})
     local mark = New("Frame", {Position = UDim2.fromOffset(14, 11), Size = UDim2.fromOffset(4, 18), BackgroundColor3 = WHITE, BorderSizePixel = 0, Parent = Top})
@@ -652,6 +817,7 @@ function Library:CreateWindow(cfg)
     Gradient(mark, 90)
     local tl = New("Frame", {Position = UDim2.fromOffset(26, 0), Size = UDim2.new(1, -80, 1, 0), BackgroundTransparency = 1, Parent = Top})
     New("UIListLayout", {FillDirection = Enum.FillDirection.Horizontal, VerticalAlignment = Enum.VerticalAlignment.Center, Padding = UDim.new(0, 8), SortOrder = Enum.SortOrder.LayoutOrder, Parent = tl})
+    if cfg.Icon then MakeIcon(tl, cfg.Icon, 18, WHITE, {LayoutOrder = 0}) end
     Txt(tl, {Text = cfg.Title or "SAKURA UI", Font = Enum.Font.GothamBold, TextSize = 15, AutomaticSize = Enum.AutomaticSize.X, Size = UDim2.fromOffset(0, 20), LayoutOrder = 1})
     Txt(tl, {Text = cfg.Subtitle or "", TextSize = 12, TextColor3 = Theme.Sub, AutomaticSize = Enum.AutomaticSize.X, Size = UDim2.fromOffset(0, 20), LayoutOrder = 2})
 
@@ -681,20 +847,46 @@ function Library:CreateWindow(cfg)
         BackgroundTransparency = 1, ClipsDescendants = true, Parent = Main,
     })
 
-    -- floating toggle button (สี่เหลี่ยม UICorner + สีไล่)
-    local Float, FloatIcon
+    -----------------------------------------------------------------
+    -- floating toggle button (สี่เหลี่ยม UICorner + สีไล่ / ใส่รูปได้)
+    -----------------------------------------------------------------
+    local Float, FloatIcon, isPhoto
     local visible = false
+
+    local function buildFloatIcon()
+        if not Float then return end
+        if FloatIcon then FloatIcon:Destroy(); FloatIcon = nil end
+        local r = Win.ToggleImage and ResolveIcon(Win.ToggleImage)
+        if r and r.Image then
+            isPhoto = true
+            FloatIcon = New("ImageLabel", {
+                Name = "Icon", BackgroundTransparency = 1, Image = r.Image, ScaleType = Enum.ScaleType.Crop,
+                Size = UDim2.fromScale(1, 1), BorderSizePixel = 0, ZIndex = 2, Parent = Float,
+            })
+            if r.RectOffset then FloatIcon.ImageRectOffset = r.RectOffset; FloatIcon.ImageRectSize = r.RectSize end
+            Corner(FloatIcon, 10)
+        else
+            isPhoto = false
+            FloatIcon = Txt(Float, {
+                Text = (r and r.Text) or "✦", Font = Enum.Font.GothamBold, TextSize = math.floor(Win.FloatSize * .5),
+                TextXAlignment = Enum.TextXAlignment.Center, AnchorPoint = Vector2.new(.5, .5),
+                Position = UDim2.fromScale(.5, .5), Size = UDim2.fromScale(1, 1), ZIndex = 2,
+            })
+            FloatIcon.Rotation = visible and 180 or 0
+        end
+    end
+
     function Win:SetVisible(v)
         if v == visible then return end
         visible = v
         if v then
             Main.Visible = true
-            Tween(Scale, .4, {Scale = 1}, Enum.EasingStyle.Back)
+            Tween(Scale, .4, {Scale = uiScale}, Enum.EasingStyle.Back)
         else
             local t = Tween(Scale, .22, {Scale = 0}, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
             t.Completed:Connect(function() if not visible then Main.Visible = false end end)
         end
-        if FloatIcon then Tween(FloatIcon, .35, {Rotation = v and 180 or 0}, Enum.EasingStyle.Back) end
+        if FloatIcon and not isPhoto then Tween(FloatIcon, .35, {Rotation = v and 180 or 0}, Enum.EasingStyle.Back) end
     end
     function Win:Toggle() self:SetVisible(not visible) end
     function Win:Notify(o) Library:Notify(o) end
@@ -703,12 +895,78 @@ function Library:CreateWindow(cfg)
         Gui:Destroy()
     end
 
+    -- ตั้งรูปปุ่มเปิด UI  (id เลข / "rbxassetid://..." / ชื่อไอคอน / nil = ใช้ค่าเริ่มต้น ✦)
+    function Win:SetToggleImage(id)
+        if id ~= nil then
+            id = tostring(id):gsub("^%s+", ""):gsub("%s+$", "")
+            if id == "" then id = nil end
+        end
+        Win.ToggleImage = id
+        buildFloatIcon()
+        if Float then
+            local fs = Float:FindFirstChildOfClass("UIScale")
+            if fs then
+                Tween(fs, .08, {Scale = .85})
+                task.delay(.08, function() Tween(fs, .3, {Scale = 1}, Enum.EasingStyle.Back) end)
+            end
+        end
+        persist()
+    end
+    function Win:SetToggleSize(px)
+        Win.FloatSize = math.clamp(px, 32, 96)
+        if Float then
+            Tween(Float, .2, {Size = UDim2.fromOffset(Win.FloatSize, Win.FloatSize)})
+            if FloatIcon and not isPhoto then FloatIcon.TextSize = math.floor(Win.FloatSize * .5) end
+        end
+        persist()
+    end
+    function Win:ShowFloat(b) if Float then Float.Visible = b and true or false end end
+    function Win:SetScale(n)
+        uiScale = math.clamp(n, .6, 1.3)
+        if visible then Tween(Scale, .2, {Scale = uiScale}) end
+        persist()
+    end
+    function Win:SetToggleKey(k)
+        Win.ToggleKey = k
+        persist()
+    end
+
+    -- พื้นหลัง UI หลัก (id เลข / "rbxassetid://..." / nil = ไม่มีรูป)
+    local function applyMainImage()
+        local r = Win.MainImage and ResolveIcon(Win.MainImage)
+        if r and r.Image then
+            BG.Image = r.Image
+            BG.ImageRectOffset = r.RectOffset or Vector2.new()
+            BG.ImageRectSize = r.RectSize or Vector2.new()
+            BG.ImageTransparency = Win.MainImageTransparency
+            BG.Visible = true
+            Tween(Side, .25, {BackgroundTransparency = .3})
+            SetRowAlpha(.25)
+        else
+            BG.Visible = false
+            BG.Image = ""
+            Tween(Side, .25, {BackgroundTransparency = 0})
+            SetRowAlpha(0)
+        end
+    end
+    function Win:SetMainImage(id)
+        Win.MainImage = NormId(id)
+        applyMainImage()
+        persist()
+    end
+    function Win:SetMainImageTransparency(a)
+        Win.MainImageTransparency = math.clamp(a, 0, .95)
+        BG.ImageTransparency = Win.MainImageTransparency
+        persist()
+    end
+    applyMainImage()
+
     minBtn.MouseButton1Click:Connect(function() Win:SetVisible(false) end)
 
     if cfg.FloatButton ~= false then
         Float = New("TextButton", {
             Name = "Float", Text = "", AutoButtonColor = false, Position = UDim2.new(0, 16, .5, -24),
-            Size = UDim2.fromOffset(48, 48), BackgroundColor3 = WHITE, BorderSizePixel = 0, Parent = Gui,
+            Size = UDim2.fromOffset(Win.FloatSize, Win.FloatSize), BackgroundColor3 = WHITE, BorderSizePixel = 0, Parent = Gui,
         })
         Corner(Float, 10)
         Gradient(Float, 45)
@@ -717,14 +975,7 @@ function Library:CreateWindow(cfg)
             ColorSequenceKeypoint.new(0, WHITE), ColorSequenceKeypoint.new(.5, Theme.Purple), ColorSequenceKeypoint.new(1, WHITE),
         }), Parent = fs}), 2.5)
         local fscale = New("UIScale", {Scale = 1, Parent = Float})
-        if cfg.ToggleImage then
-            FloatIcon = New("ImageLabel", {AnchorPoint = Vector2.new(.5, .5), Position = UDim2.fromScale(.5, .5), Size = UDim2.fromOffset(28, 28), BackgroundTransparency = 1, Image = cfg.ToggleImage, Parent = Float})
-        else
-            FloatIcon = Txt(Float, {
-                Text = "✦", Font = Enum.Font.GothamBold, TextSize = 24, TextXAlignment = Enum.TextXAlignment.Center,
-                AnchorPoint = Vector2.new(.5, .5), Position = UDim2.fromScale(.5, .5), Size = UDim2.fromScale(1, 1),
-            })
-        end
+        buildFloatIcon()
         Drag(Float, Float, function()
             Tween(fscale, .08, {Scale = .85})
             task.delay(.08, function() Tween(fscale, .25, {Scale = 1}, Enum.EasingStyle.Back) end)
@@ -736,7 +987,9 @@ function Library:CreateWindow(cfg)
         if not gp and i.KeyCode == Win.ToggleKey then Win:Toggle() end
     end)
 
+    -----------------------------------------------------------------
     -- tabs
+    -----------------------------------------------------------------
     local Active
     function Win:CreateTab(name, icon)
         if type(name) == "table" then icon = name.Icon; name = name.Name end
@@ -748,8 +1001,16 @@ function Library:CreateWindow(cfg)
         local ind = New("Frame", {AnchorPoint = Vector2.new(0, .5), Position = UDim2.new(0, 0, .5, 0), Size = UDim2.fromOffset(3, 16), BackgroundColor3 = WHITE, BackgroundTransparency = 1, BorderSizePixel = 0, Parent = btn})
         Corner(ind, 2)
         Gradient(ind, 90)
+
+        local iconObj
+        local lx = 12
+        if icon then
+            iconObj = MakeIcon(btn, icon, 16, Theme.Sub, {AnchorPoint = Vector2.new(0, .5), Position = UDim2.new(0, 12, .5, 0)})
+            if iconObj then lx = 36 end
+        end
+        local iprop = iconObj and ColorProp(iconObj)
         local lbl = Txt(btn, {
-            Text = (icon and (icon .. "  ") or "") .. (name or "Tab"), Position = UDim2.fromOffset(12, 0), Size = UDim2.new(1, -16, 1, 0),
+            Text = name or "Tab", Position = UDim2.fromOffset(lx, 0), Size = UDim2.new(1, -(lx + 4), 1, 0),
             TextColor3 = Theme.Sub, TextTruncate = Enum.TextTruncate.AtEnd,
         })
 
@@ -772,12 +1033,14 @@ function Library:CreateWindow(cfg)
             Tween(btn, .2, {BackgroundTransparency = 0})
             Tween(ind, .2, {BackgroundTransparency = 0})
             Tween(lbl, .2, {TextColor3 = Theme.Text})
+            if iconObj then Tween(iconObj, .2, {[iprop] = Theme.Pink}) end
         end
         function Tab.Deselect()
             page.Visible = false
             Tween(btn, .2, {BackgroundTransparency = 1})
             Tween(ind, .2, {BackgroundTransparency = 1})
             Tween(lbl, .2, {TextColor3 = Theme.Sub})
+            if iconObj then Tween(iconObj, .2, {[iprop] = Theme.Sub}) end
         end
         btn.MouseButton1Click:Connect(function() Tab:Select() end)
         btn.MouseEnter:Connect(function() if Active ~= Tab then Tween(lbl, .15, {TextColor3 = Theme.Text}) end end)
@@ -789,61 +1052,97 @@ function Library:CreateWindow(cfg)
         return Tab
     end
 
+    -----------------------------------------------------------------
+    -- หน้าปรับแต่ง (Customize) — ตั้งรูปปุ่มเปิด UI ด้วย ID ได้
+    -----------------------------------------------------------------
+    function Win:CreateSettingsTab(name, icon)
+        local T = Win:CreateTab(name or "ปรับแต่ง / Customize", icon or "⚙")
+
+        T:CreateSection("ปุ่มเปิด UI • Toggle Button")
+        local idBox
+        idBox = T:CreateTextbox({
+            Name = "ไอดีรูป • Image ID", Icon = "🖼", Placeholder = "เช่น 79591093854416",
+            Default = Win.ToggleImage and tostring(Win.ToggleImage) or "",
+            Callback = function(text)
+                Win:SetToggleImage(text)
+                Library:Notify({
+                    Title = (text ~= "" and "ตั้งรูปแล้ว • Image set" or "ใช้ไอคอนเริ่มต้น • Default icon"),
+                    Content = text ~= "" and ("ID: " .. text) or "กลับไปใช้ปุ่ม ✦", Duration = 3,
+                })
+            end,
+        })
+        T:CreateButton({
+            Name = "ล้างรูป • Reset Image", Icon = "↺",
+            Callback = function() idBox:Set(""); Win:SetToggleImage(nil) end,
+        })
+        T:CreateSlider({
+            Name = "ขนาดปุ่ม • Button Size", Min = 32, Max = 96, Default = Win.FloatSize, Suffix = "px",
+            Callback = function(v) Win:SetToggleSize(v) end,
+        })
+        T:CreateToggle({
+            Name = "แสดงปุ่มลอย • Show Button", Default = true,
+            Callback = function(v) Win:ShowFloat(v) end,
+        })
+
+        T:CreateSection("พื้นหลัง UI • Background")
+        local bgBox
+        bgBox = T:CreateTextbox({
+            Name = "ไอดีรูปพื้นหลัง • Main Image ID", Icon = "🖼", Placeholder = "ใส่ไอดีรูป...",
+            Default = Win.MainImage and tostring(Win.MainImage) or "",
+            Callback = function(text)
+                Win:SetMainImage(text)
+                Library:Notify({
+                    Title = (text ~= "" and "ตั้งพื้นหลังแล้ว • Background set" or "ล้างพื้นหลังแล้ว • Cleared"),
+                    Content = text ~= "" and ("ID: " .. text) or "กลับไปใช้พื้นสีเดิม", Duration = 3,
+                })
+            end,
+        })
+        T:CreateButton({
+            Name = "ล้างพื้นหลัง • Reset Background", Icon = "↺",
+            Callback = function() bgBox:Set(""); Win:SetMainImage(nil) end,
+        })
+        T:CreateSlider({
+            Name = "ความชัดรูป • Image Opacity", Min = 5, Max = 100, Increment = 5, Suffix = "%",
+            Default = math.floor((1 - Win.MainImageTransparency) * 100 + .5),
+            Callback = function(v) Win:SetMainImageTransparency(1 - v / 100) end,
+        })
+
+        T:CreateSection("หน้าต่าง • Window")
+        T:CreateSlider({
+            Name = "ขนาด UI • UI Scale", Min = 60, Max = 130, Increment = 5, Default = math.floor(uiScale * 100 + .5), Suffix = "%",
+            Callback = function(v) Win:SetScale(v / 100) end,
+        })
+        T:CreateKeybind({
+            Name = "ปุ่มเปิด/ปิด UI • Toggle Key", Default = Win.ToggleKey,
+            Changed = function(k) Win:SetToggleKey(k) end,
+        })
+        T:CreateButton({
+            Name = "ปิดสคริปต์ • Destroy UI", Icon = "✕",
+            Callback = function() Win:Destroy() end,
+        })
+        return T
+    end
+
     if cfg.AutoOpen ~= false then task.defer(function() Win:SetVisible(true) end) end
     return Win
 end
 
----------------------------------------------------------------------
--- ⬇⬇⬇  DEMO — ลบทิ้งได้เลย  ⬇⬇⬇
----------------------------------------------------------------------
-local Window = Library:CreateWindow({
-    Title = "SAKURA HUB",
-    Subtitle = "v1.0 • ชมพู × ม่วง",
-    -- ToggleImage = "rbxassetid://137896593765941", -- ใส่รูปปุ่มลอยเองได้
-    ToggleKey = Enum.KeyCode.RightShift,
+--[==[ ตัวอย่างการใช้ (คัดลอกไปใช้ในสคริปต์ของมึง)
+
+local Library = loadstring(game:HttpGet("RAW_LINK_ของไฟล์นี้"))()
+
+local Win = Library:CreateWindow({
+    Title = "MY HUB", Subtitle = "v1",
+    ToggleImage = 79591093854416,          -- รูปปุ่มเปิด UI (ปรับในหน้า Customize ได้ด้วย)
 })
 
-local Main = Window:CreateTab("หลัก / Main", "🏠")
-Main:CreateSection("ตัวละคร • Character")
+local Main = Win:CreateTab("หลัก / Main", "home")      -- ชื่อ Lucide / เลข asset id / อีโมจิ
+Main:CreateSection("ทดสอบ")
+Main:CreateToggle({Name = "ตัวอย่าง", Icon = "zap", Flag = "Example", Callback = function(v) end})
+Main:CreateButton({Name = "กดเลย", Icon = "rbxassetid://123456", Callback = function() end})
 
-Main:CreateSlider({
-    Name = "ความเร็ว • WalkSpeed", Min = 16, Max = 200, Default = 16, Increment = 1, Flag = "WalkSpeed",
-    Callback = function(v)
-        local h = Players.LocalPlayer.Character and Players.LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
-        if h then h.WalkSpeed = v end
-    end,
-})
-Main:CreateSlider({
-    Name = "ความสูงกระโดด • JumpPower", Min = 50, Max = 300, Default = 50, Flag = "JumpPower",
-    Callback = function(v)
-        local h = Players.LocalPlayer.Character and Players.LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
-        if h then h.UseJumpPower = true; h.JumpPower = v end
-    end,
-})
-Main:CreateToggle({Name = "กระโดดไม่จำกัด • Infinite Jump", Flag = "InfJump", Callback = function(v) print("InfJump:", v) end})
-Main:CreateButton({
-    Name = "แจ้งเตือนทดสอบ • Test Notify",
-    Callback = function() Window:Notify({Title = "สำเร็จ • Success", Content = "UI ทำงานปกติ ไทย/English อ่านชัดทั้งคู่", Duration = 4}) end,
-})
+Win:CreateSettingsTab()   -- หน้าปรับแต่ง: ใส่ไอดีรูปปุ่ม / ขนาดปุ่ม / ขนาด UI / ปุ่มลัด
 
-local Visual = Window:CreateTab("ภาพ / Visual", "👁")
-Visual:CreateSection("ตัวเลือก • Options")
-Visual:CreateDropdown({
-    Name = "โหมด • Mode", Options = {"ปกติ • Normal", "เร็ว • Fast", "ช้า • Slow"}, Default = "ปกติ • Normal",
-    Callback = function(v) print("Mode:", v) end,
-})
-Visual:CreateDropdown({
-    Name = "เลือกหลายอัน • Multi", Multi = true, Options = {"Player", "NPC", "Item", "Chest"}, Default = {"Player"},
-    Callback = function(t) print("Selected:", table.concat(t, ", ")) end,
-})
-Visual:CreateColorPicker({Name = "สีไฮไลต์ • Highlight", Default = Theme.Pink, Callback = function(c) print(c) end})
-
-local Misc = Window:CreateTab("อื่นๆ / Misc", "⚙")
-Misc:CreateSection("ทั่วไป • General")
-Misc:CreateTextbox({Name = "ชื่อ • Name", Placeholder = "พิมพ์ชื่อ...", Callback = function(t, enter) print("Text:", t, enter) end})
-Misc:CreateKeybind({Name = "ปุ่มลัด • Hotkey", Default = Enum.KeyCode.F, Callback = function() print("Pressed!") end})
-Misc:CreateParagraph({Title = "เกี่ยวกับ • About", Content = "SAKURA UI — ขอบไล่สีวิ่งรอบ, ปุ่มลอยลากได้, รองรับไทยและอังกฤษ. กด RightShift เพื่อเปิด/ปิด"})
-
-Window:Notify({Title = "ยินดีต้อนรับ • Welcome", Content = "โหลดเสร็จแล้ว กดปุ่มลอยเพื่อซ่อน/แสดง", Duration = 5})
+]==]
 
 return Library
