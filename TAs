@@ -1072,4 +1072,24 @@ Main:CreateButton({Name = "กดเลย", Icon = "rbxassetid://123456", Callb
 
 ]==]
 
+---------------------------------------------------------------------
+-- HUB: Xเกรียน  (หน้าเปล่า ยังไม่มีฟังก์ชัน พร้อมเอาไปต่อยอด)
+---------------------------------------------------------------------
+local Window = Library:CreateWindow({
+    Title = "Xเกรียน",
+    Subtitle = "KOMAT UNITY HUB",
+    -- ToggleImage = 79591093854416, -- รูปปุ่มเปิด UI (ลบ -- ข้างหน้าเพื่อใช้)
+    -- MainImage   = 0000000000,     -- รูปพื้นหลัง UI หลัก
+})
+
+local SettingsTab = Window:CreateTab("ตั้งค่า")
+local MainTab     = Window:CreateTab("เมนูหลัก")
+local PlayersTab  = Window:CreateTab("ผู้เล่น")
+local ESPTab      = Window:CreateTab("มองสิ่งต่างๆ")
+local TrollTab    = Window:CreateTab("เกรียนเรื้อนๆ")
+local TeleportTab = Window:CreateTab("เทเลพอร์ต")
+local ServerTab   = Window:CreateTab("เซิร์ฟเวอร์")
+
+MainTab:Select() -- เปิดหน้า "เมนูหลัก" เป็นหน้าแรก
+
 return Library
